@@ -65,11 +65,30 @@ export function mapLead(row: Record<string, unknown> | null): MappedLead | null 
   };
 }
 
-export function mapInvoice(row: Record<string, unknown>) {
+export type MappedInvoice = {
+  id: string; leadId: string; quoteId: string; clientName: string; project: string;
+  amount: number; status: 'UNPAID' | 'PAID'; createdAt: string;
+};
+
+export type MappedExpense = { id: string; vendor: string; amount: number; category: string; date: string; status: string };
+
+export function mapInvoice(row: Record<string, unknown>): MappedInvoice {
   return {
-    ...row,
+    id: String(row.id || ''),
+    leadId: String(row.lead_id || row.leadId || ''),
+    quoteId: String(row.quote_id || row.quoteId || ''),
     clientName: (row.clientName as string) || (row.client_name as string) || '',
+    project: String(row.project || ''),
+    amount: Number(row.amount || 0),
+    status: String(row.status || 'UNPAID') as MappedInvoice['status'],
     createdAt: (row.createdAt as string) || (row.created_at as string) || '',
+  };
+}
+
+export function mapExpense(row: Record<string, unknown>): MappedExpense {
+  return {
+    id: String(row.id || ''), vendor: String(row.supplier || row.vendor || ''), amount: Number(row.total_cents || 0)/100,
+    category: String(row.category_name || row.category || ''), date: String(row.transaction_date || row.date || ''), status:String(row.status || 'POSTED'),
   };
 }
 

@@ -42,3 +42,9 @@ next-env.d.ts
 # Cloudflare / OpenNext
 .open-next
 .wrangler
+
+# generated and local-only artifacts
+/output/
+/backups/
+/3.0_3rT_[{].2_3raD_.0.pdf
+/LOGO.png

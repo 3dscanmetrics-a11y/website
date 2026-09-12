@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Briefcase, ChevronDown, Clock, Ruler, Settings } from 'lucide-react';
 import QuoteEditor from './QuoteEditor';
+import type { QuoteRecord, QuoteSettings } from '@/lib/quote-types';
 
 type Lead = {
   id: string;
@@ -22,6 +23,7 @@ type Lead = {
   createdAt: string;
   rawEmail?: string;
   fieldDays: number;
+  processDays: number;
 };
 
 function formatZAR(val: number) {
@@ -36,7 +38,9 @@ function deliverableList(raw: string) {
   }
 }
 
-export default function LeadCard({ lead, defaultOpen = false }: { lead: Lead; defaultOpen?: boolean }) {
+export default function LeadCard({
+  lead, defaultOpen = false, settings, quote,
+}: { lead: Lead; defaultOpen?: boolean; settings: QuoteSettings; quote?: QuoteRecord }) {
   const [open, setOpen] = useState(defaultOpen);
   const range = String(
     lead.payload?.publicEstimate || lead.estimateFormatted || formatZAR(lead.quoteTotal || 0)
@@ -133,7 +137,7 @@ export default function LeadCard({ lead, defaultOpen = false }: { lead: Lead; de
               </div>
             </div>
           </div>
-          {lead.status === 'PENDING' ? (
+          {lead.status === 'PENDING' || quote ? (
             <div className="border-t border-gray-100 bg-gray-50 p-4 md:p-6">
               <QuoteEditor
                 lead={{
@@ -146,11 +150,12 @@ export default function LeadCard({ lead, defaultOpen = false }: { lead: Lead; de
                   complexity: lead.complexity,
                   deliverables: lead.deliverables,
                   quoteTotal: lead.quoteTotal,
-                  estimateFormatted: lead.estimateFormatted,
-                  estimateLow: lead.estimateLow,
-                  estimateHigh: lead.estimateHigh,
+                  fieldDays: lead.fieldDays,
+                  processDays: lead.processDays,
                   payload: lead.payload,
                 }}
+                settings={settings}
+                existingQuote={quote}
               />
             </div>
           ) : null}

@@ -1,25 +1,42 @@
-﻿import { getLeads, getInvoices, getExpenses } from './actions';
-import { Mail, DollarSign, CheckCircle, FileText, TrendingUp, CreditCard, Receipt, BarChart3 } from 'lucide-react';
+﻿import { getLeads, getInvoices, getExpenses, getQuoteData, getQuoteSettings } from './actions';
+import { Mail, DollarSign, CheckCircle, FileText, TrendingUp, CreditCard, Receipt, BarChart3, Settings } from 'lucide-react';
 import Link from 'next/link';
 import AssistantWidget from '../components/AssistantWidget';
 import LeadCard from '../components/LeadCard';
+import QuoteSettingsEditor from '../components/QuoteSettingsEditor';
+import ExpenseManager from '../components/ExpenseManager';
+import HrManager from '../components/HrManager';
+import { getExpenseData } from './expense-actions';
+import { getHrData } from './hr-actions';
+import { requireUser } from '@/lib/auth';
+import { redirect } from 'next/navigation';
+import UserAdmin from '../components/UserAdmin';
+import { getUsers } from './user-actions';
 
-export default async function Dashboard({ searchParams }: { searchParams: Promise<{ view?: string }> }) {
+export default async function Dashboard({ searchParams }: { searchParams: Promise<{ view?: string; q?: string; status?: string; from?: string; to?: string }> }) {
   const params = await searchParams;
   const view = params?.view || 'inbox';
+  const user = await requireUser();
+  if (user.mustChangePassword) redirect('/change-password');
+  const canFinance = user.role === 'ADMIN' || user.role === 'FINANCE';
+  const canHr = user.role === 'ADMIN' || user.role === 'HR';
 
-  const leads = await getLeads() as any[];
-  const invoices = await getInvoices() as any[];
-  const expenses = await getExpenses() as any[];
+  const [leads, invoices, expenses, quotes, quoteSettings] = await Promise.all([
+    getLeads(), getInvoices(), getExpenses(), getQuoteData(), getQuoteSettings(),
+  ]);
+  const expenseData = canFinance ? await getExpenseData({ q: params.q, status: params.status, from: params.from, to: params.to }) : null;
+  const hrData = canHr ? await getHrData() : null;
+  const crmUsers = user.role === 'ADMIN' ? await getUsers() : [];
 
   // P&L Calculations
-  const totalRevenue = invoices.filter(i => i.status === 'PAID').reduce((sum, i) => sum + i.amount, 0);
-  const pendingRevenue = invoices.filter(i => i.status === 'UNPAID').reduce((sum, i) => sum + i.amount, 0);
-  const totalExpenses = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const inPeriod = (date: string) => (!params.from || date.slice(0, 10) >= params.from) && (!params.to || date.slice(0, 10) <= params.to);
+  const totalRevenue = invoices.filter(i => i.status === 'PAID' && inPeriod(i.createdAt)).reduce((sum, i) => sum + i.amount, 0);
+  const pendingRevenue = invoices.filter(i => i.status === 'UNPAID' && inPeriod(i.createdAt)).reduce((sum, i) => sum + i.amount, 0);
+  const totalExpenses = expenses.filter(e => e.status === 'POSTED').reduce((sum, e) => sum + e.amount, 0);
   const netProfit = totalRevenue - totalExpenses;
 
   const formatZAR = (val: number) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(val || 0);
-  const firstPendingId = leads.find((l: { status: string }) => l.status === 'PENDING')?.id;
+  const firstPendingId = leads.find((lead) => lead.status === 'PENDING')?.id;
 
   return (
     <div className="min-h-screen bg-gray-50 flex text-gray-900 font-sans">
@@ -42,11 +59,17 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
           <Link href="/?view=invoices" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'invoices' ? 'bg-emerald-500/10 text-emerald-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
             <FileText className="w-5 h-5 mr-3" /> Invoices (A/R)
           </Link>
-          <Link href="/?view=expenses" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'expenses' ? 'bg-rose-500/10 text-rose-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
-            <Receipt className="w-5 h-5 mr-3" /> Expenses (A/P)
-          </Link>
+          {canFinance && <Link href="/?view=expenses" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'expenses' ? 'bg-rose-500/10 text-rose-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
+            <Receipt className="w-5 h-5 mr-3" /> Expenses
+          </Link>}
+          {canHr && <Link href="/?view=hr" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'hr' ? 'bg-violet-500/10 text-violet-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
+            <Settings className="w-5 h-5 mr-3" /> Human Resources
+          </Link>}
           <Link href="/?view=overview" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'overview' ? 'bg-indigo-500/10 text-indigo-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
             <BarChart3 className="w-5 h-5 mr-3" /> Profit & Loss
+          </Link>
+          <Link href="/?view=settings" className={`flex items-center px-4 py-3 rounded-lg transition-colors ${view === 'settings' ? 'bg-orange-500/10 text-orange-400 font-medium' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}>
+            <Settings className="w-5 h-5 mr-3" /> Quote Settings
           </Link>
         </nav>
       </aside>
@@ -57,7 +80,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
         {/* TOPBAR */}
         <header className="bg-white border-b border-gray-200 px-4 md:px-8 py-3 md:py-4 flex items-center justify-between sticky top-0 z-10">
           <h2 className="text-base md:text-xl font-semibold text-gray-800 capitalize truncate">
-            {view === 'inbox' ? 'AI RFP Review Queue' : view === 'invoices' ? 'Accounts Receivable' : view === 'expenses' ? 'Accounts Payable' : 'Financial Overview'}
+            {view === 'inbox' ? 'AI RFP Review Queue' : view === 'invoices' ? 'Accounts Receivable' : view === 'expenses' ? 'Expenses' : view === 'hr' ? 'Human Resources' : view === 'settings' ? 'Quote Settings' : 'Financial Overview'}
           </h2>
         </header>
 
@@ -71,6 +94,8 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                   key={lead.id}
                   lead={lead}
                   defaultOpen={lead.id === firstPendingId}
+                  settings={quoteSettings}
+                  quote={quotes.find((quote) => quote.leadId === lead.id)}
                 />
               ))}
             </div>
@@ -124,6 +149,12 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
 
           {/* VIEW: EXPENSES */}
           {view === 'expenses' && (
+            expenseData ? <ExpenseManager data={expenseData as never} /> : <p>Access denied.</p>
+          )}
+
+          {view === 'hr' && (hrData ? <HrManager data={hrData as never} /> : <p>Access denied.</p>)}
+
+          {false && (
             <div>
               <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 md:p-6 mb-6 md:mb-8">
                 <form action={async (formData) => { 'use server'; await import('./actions').then(a => a.addExpense(formData.get('vendor') as string, Number(formData.get('amount')), formData.get('category') as string)); }} className="flex-1 flex flex-col md:flex-row gap-4 md:items-end">
@@ -193,7 +224,7 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
                     <div className="p-2 bg-rose-100 rounded-lg"><CreditCard className="w-5 h-5 text-rose-600" /></div>
                   </div>
                   <p className="text-3xl font-bold text-gray-900">{formatZAR(totalExpenses)}</p>
-                  <p className="text-sm text-gray-400 mt-2">All time AP</p>
+                  <p className="text-sm text-gray-400 mt-2">Posted expenses</p>
                 </div>
 
                 <div className="bg-gray-900 p-6 rounded-xl shadow-lg relative overflow-hidden">
@@ -243,27 +274,29 @@ export default async function Dashboard({ searchParams }: { searchParams: Promis
             </div>
           )}
 
+          {view === 'settings' && <><QuoteSettingsEditor initial={quoteSettings} />{user.role === 'ADMIN' && <UserAdmin users={crmUsers as never}/>}</>}
+
         </div>
       </main>
 
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-gray-900 border-t border-gray-800 grid grid-cols-4 text-[11px] pb-[env(safe-area-inset-bottom)]">
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-gray-900 border-t border-gray-800 grid grid-cols-5 text-[10px] pb-[env(safe-area-inset-bottom)]">
         <Link href="/?view=inbox" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'inbox' ? 'text-cyan-400' : 'text-gray-400'}`}>
           <Mail className="w-5 h-5" /> Inbox
         </Link>
         <Link href="/?view=invoices" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'invoices' ? 'text-emerald-400' : 'text-gray-400'}`}>
           <FileText className="w-5 h-5" /> Invoices
         </Link>
-        <Link href="/?view=expenses" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'expenses' ? 'text-rose-400' : 'text-gray-400'}`}>
+        {canFinance && <Link href="/?view=expenses" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'expenses' ? 'text-rose-400' : 'text-gray-400'}`}>
           <Receipt className="w-5 h-5" /> Expenses
-        </Link>
+        </Link>}
         <Link href="/?view=overview" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'overview' ? 'text-indigo-400' : 'text-gray-400'}`}>
           <BarChart3 className="w-5 h-5" /> P&amp;L
+        </Link>
+        <Link href="/?view=settings" className={`flex flex-col items-center justify-center gap-1 py-2 min-h-14 ${view === 'settings' ? 'text-orange-400' : 'text-gray-400'}`}>
+          <Settings className="w-5 h-5" /> Settings
         </Link>
       </nav>
       <AssistantWidget />
     </div>
   );
 }
-
-
-

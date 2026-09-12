@@ -1,253 +1,160 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import { CheckCircle, XCircle } from 'lucide-react';
-import { calculateEstimateRange, DEFAULT_PRICING, formatZAR } from '@/lib/pricing';
-import { rejectLead, saveLeadQuote, sendFormalQuote } from '../app/actions';
-
-const COMPLEXITY = [
-  'Commercial/Retail/Residential',
-  'Civil Infrastructure',
-  'Industrial Facility / Plant',
-  'Mining (Surface)',
-  'Mining (Underground)',
-];
-
-const ACCESS = [
-  'Standard business hours only',
-  'After-hours / Weekend work required',
-  'High-security clearance / Escort required',
-  'Operational plant/mine site (Simultaneous ops)',
-];
-
-const ACCURACY = ['Standard', 'High Precision'];
-const LOD = ['100', '200', '300', '400'];
-const DELIVS = ['raw', 'viewer', 'cad', 'topo', 'bim'];
+import { Download, Plus, RefreshCw, Save, Send, Trash2, XCircle } from 'lucide-react';
+import { rejectLead } from '@/app/actions';
+import { issueQuote, saveQuoteDraft } from '@/app/quote-actions';
+import { calculateDraftTotals, generateQuoteDraft } from '@/lib/quote-builder';
+import type { QuoteDraftInput, QuoteRecord, QuoteSection, QuoteSettings } from '@/lib/quote-types';
 
 type LeadProps = {
-  id: string;
-  email: string;
-  name: string;
-  company: string;
-  project: string;
-  area: number;
-  complexity: string;
-  deliverables: string;
-  quoteTotal: number;
-  estimateFormatted?: string;
-  estimateLow?: number;
-  estimateHigh?: number;
-  payload?: Record<string, unknown>;
+  id: string; email: string; name: string; company: string; project: string;
+  area: number; complexity: string; deliverables: string; quoteTotal: number;
+  fieldDays: number; processDays: number; payload?: Record<string, unknown>;
 };
 
-function parseDelivs(raw: string): string[] {
-  try {
-    const v = JSON.parse(raw || '[]');
-    return Array.isArray(v) ? v.map(String) : [];
-  } catch {
-    return [];
-  }
+function zar(value: number) {
+  return new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(value || 0);
 }
 
-export default function QuoteEditor({ lead }: { lead: LeadProps }) {
-  const payload = lead.payload || {};
-  const [area, setArea] = useState(Number(lead.area) || 0);
-  const [complexity, setComplexity] = useState(lead.complexity || COMPLEXITY[0]);
-  const [access, setAccess] = useState(String(payload.access || ACCESS[0]));
-  const [accuracy, setAccuracy] = useState(String(payload.accuracy || 'Standard'));
-  const [bimLevel, setBimLevel] = useState(String(payload.bimLevel || payload.lod || '300'));
-  const [deliverables, setDeliverables] = useState<string[]>(
-    parseDelivs(lead.deliverables).length
-      ? parseDelivs(lead.deliverables)
-      : Array.isArray(payload.deliverables)
-        ? (payload.deliverables as string[])
-        : []
-  );
-  const [firmAmount, setFirmAmount] = useState(
-    Number(payload.firmAmount) || Number(lead.quoteTotal) || 0
-  );
-  const [pending, setPending] = useState<'save' | 'send' | 'reject' | null>(null);
+function editableDraft(quote: QuoteRecord): QuoteDraftInput {
+  return {
+    id: quote.id, leadId: quote.leadId, clientCompany: quote.clientCompany,
+    clientContact: quote.clientContact, clientEmail: quote.clientEmail, clientPhone: quote.clientPhone,
+    clientAddress: quote.clientAddress, project: quote.project, deliverablesSummary: quote.deliverablesSummary,
+    timeframe: quote.timeframe, validityDays: quote.validityDays, paymentReference: quote.paymentReference,
+    vatEnabled: quote.vatEnabled, vatRate: quote.vatRate, sections: quote.sections,
+  };
+}
 
-  const range = useMemo(
-    () =>
-      calculateEstimateRange(DEFAULT_PRICING, {
-        area,
-        complexity,
-        deliverables,
-        access,
-        accuracy,
-        bimLevel,
-      }),
-    [area, complexity, deliverables, access, accuracy, bimLevel]
+export default function QuoteEditor({
+  lead, settings, existingQuote,
+}: { lead: LeadProps; settings: QuoteSettings; existingQuote?: QuoteRecord }) {
+  const initial = existingQuote ? editableDraft(existingQuote) : generateQuoteDraft(lead, settings);
+  const [draft, setDraft] = useState<QuoteDraftInput>(initial);
+  const [quoteNumber, setQuoteNumber] = useState(existingQuote?.quoteNumber || 'Allocated on first save');
+  const [status, setStatus] = useState(existingQuote?.status || 'DRAFT');
+  const [pending, setPending] = useState<'save' | 'preview' | 'issue' | 'reject' | null>(null);
+  const [message, setMessage] = useState('');
+  const totals = useMemo(
+    () => calculateDraftTotals(draft.sections, draft.vatEnabled, draft.vatRate),
+    [draft.sections, draft.vatEnabled, draft.vatRate]
   );
+  const locked = status === 'ISSUED';
 
-  function toggleDeliv(id: string) {
-    setDeliverables((prev) => (prev.includes(id) ? prev.filter((d) => d !== id) : [...prev, id]));
+  const setField = <K extends keyof QuoteDraftInput>(key: K, value: QuoteDraftInput[K]) =>
+    setDraft((current) => ({ ...current, [key]: value }));
+
+  function updateSection(sectionId: string, update: Partial<QuoteSection>) {
+    setField('sections', draft.sections.map((section) => section.id === sectionId ? { ...section, ...update } : section));
   }
 
-  function appendForm(fd: FormData) {
-    fd.set('id', lead.id);
-    fd.set('area', String(area));
-    fd.set('complexity', complexity);
-    fd.set('access', access);
-    fd.set('accuracy', accuracy);
-    fd.set('bimLevel', bimLevel);
-    fd.set('deliverables', JSON.stringify(deliverables));
-    fd.set('firmAmount', String(firmAmount || range.mid));
+  function updateItem(sectionId: string, itemId: string, key: string, value: string | number) {
+    setField('sections', draft.sections.map((section) => section.id !== sectionId ? section : {
+      ...section,
+      items: section.items.map((row) => row.id === itemId
+        ? { ...row, [key]: value, amount: key === 'rate' ? Number(value) * row.quantity : key === 'quantity' ? row.rate * Number(value) : row.amount }
+        : row),
+    }));
+  }
+
+  async function persist() {
+    const result = await saveQuoteDraft(draft);
+    setDraft((current) => ({ ...current, id: result.id }));
+    setQuoteNumber(result.quoteNumber);
+    return result;
+  }
+
+  async function run(kind: typeof pending, action: () => Promise<void>) {
+    setPending(kind); setMessage('');
+    try { await action(); } catch (error) { setMessage(error instanceof Error ? error.message : 'Action failed.'); }
+    finally { setPending(null); }
+  }
+
+  if (locked && existingQuote) {
+    return (
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+        <div><p className="font-semibold text-emerald-900">Issued quote {existingQuote.quoteNumber}</p><p className="text-sm text-emerald-700">Grand total {zar(existingQuote.total)}</p></div>
+        <a href={`/api/quotes/${existingQuote.id}/pdf?mode=issued`} target="_blank" className="inline-flex items-center gap-2 bg-white border border-emerald-300 rounded-lg px-4 py-2 text-sm font-medium text-emerald-800"><Download className="w-4 h-4" /> Download PDF</a>
+      </div>
+    );
   }
 
   return (
-    <div className="grid gap-6 md:grid-cols-2">
-      <div className="space-y-4">
-        <label className="block text-xs font-medium text-gray-600">
-          Area (sqm)
-          <input
-            type="number"
-            className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm bg-white"
-            value={area}
-            onChange={(e) => setArea(Number(e.target.value))}
-          />
-        </label>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><p className="text-xs uppercase tracking-wide text-gray-500">Formal quote draft</p><p className="font-semibold text-gray-900">{quoteNumber}</p></div>
+        <button type="button" className="inline-flex items-center gap-2 text-sm border rounded-lg px-3 py-2 bg-white" onClick={() => {
+          if (confirm('Regenerate all line items from the questionnaire? Manual line edits will be replaced.')) setDraft(generateQuoteDraft(lead, settings));
+        }}><RefreshCw className="w-4 h-4" /> Regenerate</button>
+      </div>
 
-        <label className="block text-xs font-medium text-gray-600">
-          Site environment ×{range.breakdown.siteMult}
-          <select
-            className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm bg-white"
-            value={complexity}
-            onChange={(e) => setComplexity(e.target.value)}
-          >
-            {COMPLEXITY.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block text-xs font-medium text-gray-600">
-          Access ×{range.breakdown.accessMult}
-          <select
-            className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm bg-white"
-            value={access}
-            onChange={(e) => setAccess(e.target.value)}
-          >
-            {ACCESS.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
-        </label>
-
-        <label className="block text-xs font-medium text-gray-600">
-          Accuracy ×{range.breakdown.accuracyMult}
-          <select
-            className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm bg-white"
-            value={accuracy}
-            onChange={(e) => setAccuracy(e.target.value)}
-          >
-            {ACCURACY.map((c) => (
-              <option key={c}>{c}</option>
-            ))}
-          </select>
-        </label>
-
-        <div>
-          <p className="text-xs font-medium text-gray-600 mb-1">Deliverables</p>
-          <div className="flex flex-wrap gap-2">
-            {DELIVS.map((id) => (
-              <label key={id} className="text-xs flex items-center gap-1 border rounded px-2 py-1 bg-white">
-                <input type="checkbox" checked={deliverables.includes(id)} onChange={() => toggleDeliv(id)} />
-                {id}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4">
+          <h4 className="font-semibold text-gray-900">Client and project</h4>
+          <div className="grid sm:grid-cols-2 gap-3">
+            {([
+              ['clientCompany', 'Company'], ['clientContact', 'Contact person'], ['clientEmail', 'Email'],
+              ['clientPhone', 'Cell'], ['project', 'Project'], ['timeframe', 'Timeframe'],
+              ['deliverablesSummary', 'Deliverables'], ['paymentReference', 'Payment reference'],
+            ] as const).map(([key, label]) => (
+              <label key={key} className={`text-xs font-medium text-gray-600 ${key === 'project' || key === 'deliverablesSummary' ? 'sm:col-span-2' : ''}`}>
+                {label}<input value={String(draft[key] || '')} onChange={(event) => setField(key, event.target.value)} className="mt-1 w-full border rounded-lg px-3 py-2.5 text-base sm:text-sm bg-white" />
               </label>
             ))}
+            <label className="sm:col-span-2 text-xs font-medium text-gray-600">Client address<textarea value={draft.clientAddress} onChange={(event) => setField('clientAddress', event.target.value)} className="mt-1 w-full border rounded-lg px-3 py-2.5 text-base sm:text-sm bg-white" rows={2} /></label>
           </div>
         </div>
 
-        {deliverables.includes('bim') && (
-          <label className="block text-xs font-medium text-gray-600">
-            BIM LOD ×{range.breakdown.lodMult}
-            <select
-              className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm bg-white"
-              value={bimLevel}
-              onChange={(e) => setBimLevel(e.target.value)}
-            >
-              {LOD.map((c) => (
-                <option key={c} value={c}>
-                  LOD {c}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <div className="space-y-4">
+          <h4 className="font-semibold text-gray-900">Totals and tax</h4>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="text-xs font-medium text-gray-600">Validity (days)<input type="number" min="1" value={draft.validityDays} onChange={(event) => setField('validityDays', Number(event.target.value))} className="mt-1 w-full border rounded-lg px-3 py-2.5 text-base sm:text-sm bg-white" /></label>
+            <label className="text-xs font-medium text-gray-600">VAT rate (%)<input type="number" min="0" step="0.01" disabled={!draft.vatEnabled} value={draft.vatRate} onChange={(event) => setField('vatRate', Number(event.target.value))} className="mt-1 w-full border rounded-lg px-3 py-2.5 text-base sm:text-sm bg-white disabled:bg-gray-100" /></label>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={draft.vatEnabled} onChange={(event) => setField('vatEnabled', event.target.checked)} /> Add VAT to this quote</label>
+          <div className="rounded-xl bg-white border p-4 space-y-2 text-sm">
+            <div className="flex justify-between"><span>Subtotal</span><strong>{zar(totals.subtotal)}</strong></div>
+            {draft.vatEnabled ? <div className="flex justify-between"><span>VAT {draft.vatRate}%</span><strong>{zar(totals.vatAmount)}</strong></div> : null}
+            <div className="flex justify-between border-t pt-2 text-lg"><span>Grand total</span><strong>{zar(totals.total)}</strong></div>
+          </div>
+        </div>
       </div>
 
       <div className="space-y-4">
-        <div className="text-xs text-gray-500 space-y-1 p-4 bg-white rounded-lg border border-gray-100">
-          <p className="font-semibold text-gray-700">Live indicative range</p>
-          <p className="text-xl font-bold text-gray-900">{range.formatted}</p>
-          <p>Mid {formatZAR(range.mid)} · Field {range.fieldDays}d · Process {range.processDays}d</p>
-          <ul className="mt-2 space-y-0.5 border-t border-gray-100 pt-2">
-            {range.breakdown.lines.map((line) => (
-              <li key={line.label} className="flex justify-between gap-2">
-                <span>{line.label}</span>
-                <span className="tabular-nums">{formatZAR(line.amount)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <div className="flex justify-between items-center"><h4 className="font-semibold text-gray-900">Itemized services</h4><button type="button" onClick={() => setField('sections', [...draft.sections, { id: crypto.randomUUID(), title: 'New section', items: [] }])} className="inline-flex items-center gap-1 text-sm text-cyan-700"><Plus className="w-4 h-4" /> Section</button></div>
+        {draft.sections.map((section) => (
+          <div key={section.id} className="bg-white border rounded-xl overflow-hidden">
+            <div className="flex gap-2 items-center bg-gray-100 p-3">
+              <input value={section.title} onChange={(event) => updateSection(section.id, { title: event.target.value })} className="flex-1 bg-transparent font-semibold min-w-0" />
+              <button type="button" aria-label="Delete section" onClick={() => setField('sections', draft.sections.filter((candidate) => candidate.id !== section.id))}><Trash2 className="w-4 h-4 text-rose-500" /></button>
+            </div>
+            <div className="overflow-x-auto">
+              <div className="min-w-[760px]">
+                <div className="grid grid-cols-[minmax(250px,1fr)_120px_100px_100px_110px_36px] gap-2 px-3 py-2 text-xs uppercase text-gray-400"><span>Description</span><span>Rate</span><span>Quantity</span><span>Unit</span><span className="text-right">Cost</span><span /></div>
+                {section.items.map((row) => (
+                  <div key={row.id} className="grid grid-cols-[minmax(250px,1fr)_120px_100px_100px_110px_36px] gap-2 px-3 py-2 border-t items-center">
+                    <input value={row.description} onChange={(event) => updateItem(section.id, row.id, 'description', event.target.value)} className="border rounded px-2 py-2" />
+                    <input type="number" min="0" step="0.01" value={row.rate} onChange={(event) => updateItem(section.id, row.id, 'rate', Number(event.target.value))} className="border rounded px-2 py-2" />
+                    <input type="number" min="0" step="0.01" value={row.quantity} onChange={(event) => updateItem(section.id, row.id, 'quantity', Number(event.target.value))} className="border rounded px-2 py-2" />
+                    <input value={row.unit} onChange={(event) => updateItem(section.id, row.id, 'unit', event.target.value)} className="border rounded px-2 py-2" />
+                    <span className="text-right font-medium">{zar(row.rate * row.quantity)}</span>
+                    <button type="button" aria-label="Delete item" onClick={() => updateSection(section.id, { items: section.items.filter((candidate) => candidate.id !== row.id) })}><Trash2 className="w-4 h-4 text-rose-500" /></button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <button type="button" onClick={() => updateSection(section.id, { items: [...section.items, { id: crypto.randomUUID(), description: 'New item', rate: 0, quantity: 1, unit: 'Item', amount: 0 }] })} className="m-3 inline-flex items-center gap-1 text-sm text-cyan-700"><Plus className="w-4 h-4" /> Add item</button>
+          </div>
+        ))}
+      </div>
 
-        <label className="block text-xs font-medium text-gray-600">
-          Firm invoice amount (ZAR)
-          <input
-            type="number"
-            step="0.01"
-            className="mt-1 w-full border rounded-lg px-3 py-3 md:py-2 text-base md:text-sm font-semibold bg-white"
-            value={firmAmount || range.mid}
-            onChange={(e) => setFirmAmount(Number(e.target.value))}
-          />
-        </label>
-
-        <div className="flex flex-col-reverse sm:flex-row gap-2">
-          <button
-            type="button"
-            disabled={pending !== null}
-            className="flex-1 bg-white border border-gray-200 text-gray-800 py-3 sm:py-2 rounded-lg text-sm min-h-12"
-            onClick={async () => {
-              setPending('save');
-              const fd = new FormData();
-              appendForm(fd);
-              await saveLeadQuote(fd);
-              setPending(null);
-            }}
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            disabled={pending !== null}
-            className="flex-1 bg-cyan-500 hover:bg-cyan-600 text-white py-3 sm:py-2 rounded-lg text-sm font-medium flex items-center justify-center min-h-12"
-            onClick={async () => {
-              setPending('send');
-              const fd = new FormData();
-              appendForm(fd);
-              await sendFormalQuote(fd);
-              setPending(null);
-            }}
-          >
-            <CheckCircle className="w-4 h-4 mr-1" />
-            {pending === 'send' ? 'Sending…' : 'Send quote & invoice'}
-          </button>
-          <button
-            type="button"
-            disabled={pending !== null}
-            className="bg-white border border-gray-200 text-rose-500 p-3 sm:p-2 rounded-lg min-h-12 sm:min-h-0 flex items-center justify-center"
-            aria-label="Reject"
-            onClick={async () => {
-              setPending('reject');
-              await rejectLead(lead.id);
-              setPending(null);
-            }}
-          >
-            <XCircle className="w-5 h-5" />
-          </button>
-        </div>
+      {message ? <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-3">{message}</p> : null}
+      <div className="flex flex-col sm:flex-row gap-2">
+        <button disabled={pending !== null} onClick={() => run('save', async () => { await persist(); setMessage('Draft saved.'); })} className="inline-flex justify-center items-center gap-2 border bg-white rounded-lg px-4 py-3 text-sm font-medium"><Save className="w-4 h-4" /> {pending === 'save' ? 'Saving...' : 'Save draft'}</button>
+        <button disabled={pending !== null} onClick={() => run('preview', async () => { const popup = window.open('', '_blank'); const saved = await persist(); if (popup) popup.location.href = `/api/quotes/${saved.id}/pdf?mode=draft`; })} className="inline-flex justify-center items-center gap-2 border bg-white rounded-lg px-4 py-3 text-sm font-medium"><Download className="w-4 h-4" /> {pending === 'preview' ? 'Preparing...' : 'Preview PDF'}</button>
+        <button disabled={pending !== null} onClick={() => run('issue', async () => { if (!confirm('Issue and email this quote? Issued quotes cannot be edited.')) return; const saved = await persist(); await issueQuote(saved.id); setStatus('ISSUED'); setMessage('Quote issued, emailed, and added to invoices.'); })} className="inline-flex justify-center items-center gap-2 bg-cyan-600 text-white rounded-lg px-5 py-3 text-sm font-medium"><Send className="w-4 h-4" /> {pending === 'issue' ? 'Issuing...' : 'Issue & email'}</button>
+        <button disabled={pending !== null} onClick={() => run('reject', async () => { await rejectLead(lead.id); })} className="inline-flex justify-center items-center gap-2 border border-rose-200 text-rose-600 rounded-lg px-4 py-3 text-sm"><XCircle className="w-4 h-4" /> Reject lead</button>
       </div>
     </div>
   );

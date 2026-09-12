@@ -7,29 +7,9 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const basicAuth = req.headers.get('authorization');
-  
-  if (basicAuth) {
-    const authValue = basicAuth.split(' ')[1];
-    const [user, pwd] = atob(authValue).split(':');
-
-    const validUser = process.env.ADMIN_USERNAME || 'admin';
-    const validPass = process.env.ADMIN_PASSWORD || 'metrics2026';
-
-    if (user === validUser && pwd === validPass) {
-      return NextResponse.next();
-    }
-  }
-
-  const url = req.nextUrl;
-  url.pathname = '/api/auth';
-
-  return new NextResponse('Auth required', {
-    status: 401,
-    headers: {
-      'WWW-Authenticate': 'Basic realm="Secure CRM Dashboard"',
-    },
-  });
+  if (req.nextUrl.pathname === '/login' || req.nextUrl.pathname === '/change-password') return NextResponse.next();
+  if (req.cookies.get('metrics_session')?.value) return NextResponse.next();
+  return NextResponse.redirect(new URL('/login', req.url));
 }
 
 export const config = {

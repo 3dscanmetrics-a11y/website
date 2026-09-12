@@ -1,90 +1,212 @@
 import PDFDocument from 'pdfkit';
+import type { QuoteRecord } from '@/lib/quote-types';
 
-export function generateQuotePDF(lead: any): Promise<Buffer> {
+const NAVY = '#071747';
+const ORANGE = '#ff5a3d';
+const PALE = '#f4f9fb';
+const BLUE_ROW = '#dcecf8';
+const GREY_ROW = '#d7d7d7';
+
+function zar(value: number) {
+  return new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(value || 0);
+}
+
+function dateLabel(value?: string) {
+  const date = value ? new Date(`${value}T00:00:00`) : new Date();
+  return new Intl.DateTimeFormat('en-GB').format(date);
+}
+
+function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number, size = 62) {
+  doc.save().circle(x + size / 2, y + size / 2, size / 2).fillAndStroke(ORANGE, '#000000');
+  doc.fillColor('#000000');
+  const cx = x + size / 2;
+  doc.rect(cx - 19, y + 18, 16, 24).fill();
+  doc.rect(cx + 3, y + 18, 16, 24).fill();
+  doc.polygon([cx - 3, y + 25], [cx + 3, y + 31], [cx - 3, y + 37]).fill();
+  doc.rect(cx - 3, y + 38, 6, 16).fill();
+  doc.rect(cx - 10, y + 53, 20, 4).fill();
+  doc.restore();
+}
+
+function companyHeader(doc: PDFKit.PDFDocument, quote: QuoteRecord, compact = false) {
+  const settings = quote.settings;
+  doc.rect(0, 0, doc.page.width, compact ? 142 : 94).fill(PALE);
+  drawLogo(doc, 42, 19, compact ? 48 : 58);
+  if (compact) {
+    doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(12).text(settings.tradingName, 42, 76);
+    doc.font('Helvetica-Oblique').fontSize(9).text(`A ${settings.companyName} Company`, 42, 92);
+    doc.font('Helvetica').fontSize(8).text(`Reg: ${settings.registrationNumber}`, 42, 107);
+    doc.text(`${settings.email}  |  ${settings.website}  |  ${settings.phone}`, 42, 121);
+  }
+}
+
+function draftWatermark(doc: PDFKit.PDFDocument) {
+  const cursorX = doc.x;
+  const cursorY = doc.y;
+  doc.save().fillColor('#d1d5db').fillOpacity(0.24).font('Helvetica-Bold').fontSize(74)
+    .rotate(-35, { origin: [doc.page.width / 2, doc.page.height / 2] })
+    .text('DRAFT', 70, doc.page.height / 2 - 35, { width: 470, align: 'center' });
+  doc.restore();
+  doc.x = cursorX;
+  doc.y = cursorY;
+}
+
+function drawLabelValue(doc: PDFKit.PDFDocument, label: string, value: string, x: number, y: number, width: number) {
+  doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(9).text(label, x, y, { continued: true, width });
+  doc.font('Helvetica').text(value || '-', { width });
+}
+
+function ensureSpace(doc: PDFKit.PDFDocument, height: number, quote: QuoteRecord, draft: boolean) {
+  if (doc.y + height <= doc.page.height - 50) return;
+  doc.addPage();
+  companyHeader(doc, quote, true);
+  doc.y = 158;
+  if (draft) draftWatermark(doc);
+}
+
+function drawTable(doc: PDFKit.PDFDocument, quote: QuoteRecord, draft: boolean) {
+  const x = 42;
+  const widths = [217, 82, 62, 68, 82];
+  const totalWidth = widths.reduce((sum, value) => sum + value, 0);
+  const row = (cells: string[], fill: string | null, bold = false, height = 24) => {
+    ensureSpace(doc, height + 4, quote, draft);
+    const y = doc.y;
+    if (fill) doc.rect(x, y, totalWidth, height).fill(fill);
+    doc.strokeColor('#111111').lineWidth(0.7);
+    let cursor = x;
+    for (let index = 0; index < widths.length; index += 1) {
+      doc.rect(cursor, y, widths[index], height).stroke();
+      doc.fillColor('#111111').font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(8.5)
+        .text(cells[index] || '', cursor + 4, y + 7, {
+          width: widths[index] - 8,
+          align: index === 0 || index === 3 ? 'left' : 'right',
+          ellipsis: true,
+        });
+      cursor += widths[index];
+    }
+    doc.y = y + height;
+  };
+
+  row(['Item', 'Rate', 'Quantity', 'Unit', 'Cost'], null, true, 25);
+  for (const section of quote.sections) {
+    row([section.title, '', '', '', ''], GREY_ROW, true, 23);
+    let sectionTotal = 0;
+    for (const item of section.items) {
+      sectionTotal += item.amount;
+      row([item.description, zar(item.rate), Number(item.quantity).toLocaleString('en-ZA'), item.unit, zar(item.amount)], null);
+    }
+    row(['Subtotal', '', '', '', zar(sectionTotal)], BLUE_ROW, true, 23);
+  }
+  row(['', '', '', 'Subtotal', zar(quote.subtotal)], null, true);
+  if (quote.vatEnabled) row(['', '', '', `VAT ${quote.vatRate}%`, zar(quote.vatAmount)], null, true);
+  row(['', '', '', 'Grand Total', zar(quote.total)], BLUE_ROW, true, 27);
+}
+
+function drawTerms(doc: PDFKit.PDFDocument, quote: QuoteRecord, draft: boolean) {
+  const newTermsPage = () => {
+    doc.addPage();
+    companyHeader(doc, quote, true);
+    if (draft) draftWatermark(doc);
+    doc.y = 158;
+  };
+  newTermsPage();
+  doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(13)
+    .text('TERMS AND CONDITIONS OF SERVICE: 3D LASER SCANNING', 42, doc.y, { width: 511 });
+  doc.moveDown(1);
+  doc.font('Helvetica').fontSize(9).text(`${quote.settings.companyName} t/a ${quote.settings.tradingName}`);
+  doc.text(`Registration No: ${quote.settings.registrationNumber}`);
+  doc.moveDown(1.2);
+
+  quote.terms.forEach((term, index) => {
+    if (index === 4) newTermsPage();
+    const cursorX = doc.x;
+    const cursorY = doc.y;
+    const bodyHeight = doc.heightOfString(term.body, { width: 511, lineGap: 2 });
+    doc.x = cursorX;
+    doc.y = cursorY;
+    if (index !== 4) ensureSpace(doc, bodyHeight + 35, quote, draft);
+    doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(10.5).text(term.heading, 42, doc.y, { width: 511 });
+    doc.moveDown(0.3);
+    doc.font('Helvetica').fontSize(9).text(term.body, 42, doc.y, { width: 511, lineGap: 2 });
+    doc.moveDown(0.9);
+  });
+
+  ensureSpace(doc, 135, quote, draft);
+  doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(11).text('ACCEPTANCE', 42, doc.y);
+  doc.moveDown(0.5);
+  doc.font('Helvetica').fontSize(9.5)
+    .text('I, the undersigned, accept this quotation and the terms governing the 3D laser scanning services.', 42, doc.y, { width: 511 });
+  doc.moveDown(1.5).text('Signed: __________________________________________');
+  doc.moveDown(1.2).text('Date: ____________________________________________');
+  doc.moveDown(1.2).text('For (Client Name): ________________________________');
+}
+
+export function generateQuotePDF(quote: QuoteRecord, options: { draft?: boolean } = {}): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     try {
-      const doc = new PDFDocument({ margin: 50 });
+      const draft = Boolean(options.draft);
+      const doc = new PDFDocument({ size: 'A4', margin: 42, bufferPages: true, info: { Title: quote.quoteNumber } });
       const chunks: Buffer[] = [];
-      
       doc.on('data', (chunk) => chunks.push(chunk));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
       doc.on('error', reject);
 
-      // Header
-      doc.fontSize(24).font('Helvetica-Bold').fillColor('#00e5ff').text('3D Scan Metrics', { align: 'right' });
-      doc.fontSize(10).fillColor('#6b7280').text('Industrial Scanning & BIM Solutions', { align: 'right' });
-      doc.moveDown(2);
+      companyHeader(doc, quote);
+      if (draft) draftWatermark(doc);
+      const settings = quote.settings;
+      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(9)
+        .text(`Quote number: ${quote.quoteNumber}`, 370, 48, { width: 183, align: 'right' });
+      doc.font('Helvetica').text(`Quote issued on ${dateLabel(quote.issueDate)}`, 370, 63, { width: 183, align: 'right' });
+      doc.text(`Valid for ${quote.validityDays} days`, 370, 77, { width: 183, align: 'right' });
 
-      // Title
-      doc.fontSize(20).font('Helvetica-Bold').fillColor('#111827').text('Formal Scoping Estimate');
-      doc.moveDown(1);
+      doc.rect(0, 100, doc.page.width, 130).fill(PALE);
+      doc.fillColor(NAVY).font('Helvetica-Bold').fontSize(12).text(settings.tradingName, 42, 114);
+      doc.font('Helvetica-Oblique').fontSize(9).text(`A ${settings.companyName} Company`, 42, 132);
+      doc.font('Helvetica').fontSize(8.5).text(`Reg: ${settings.registrationNumber}`, 42, 148);
+      doc.text(settings.email, 42, 167).text(settings.website, 42, 182);
+      doc.font('Helvetica-Bold').text('Contact Person: ', 42, 198, { continued: true }).font('Helvetica').text(settings.contactName);
+      doc.font('Helvetica-Bold').text('Cell: ', 42, 213, { continued: true }).font('Helvetica').text(settings.phone);
 
-      // Client Info
-      doc.fontSize(12).font('Helvetica-Bold').text('Prepared For:');
-      doc.font('Helvetica').text(`${lead.name || 'Valued Client'}`);
-      if (lead.company) doc.text(lead.company);
-      doc.text(lead.email);
-      doc.moveDown(1);
+      drawLabelValue(doc, 'Quote to: ', quote.clientCompany || quote.clientContact, 300, 114, 253);
+      drawLabelValue(doc, 'Contact Person: ', quote.clientContact, 300, 134, 253);
+      drawLabelValue(doc, 'Email: ', quote.clientEmail, 300, 154, 253);
+      drawLabelValue(doc, 'Cell: ', quote.clientPhone, 300, 174, 253);
+      drawLabelValue(doc, 'Address: ', quote.clientAddress, 300, 194, 253);
 
-      // Project Specs
-      doc.fontSize(14).font('Helvetica-Bold').text('Project Specifications', { underline: true });
-      doc.moveDown(0.5);
-      doc.font('Helvetica-Bold').text('Project Name: ', { continued: true }).font('Helvetica').text(lead.project || 'N/A');
-      doc.font('Helvetica-Bold').text('Total Area: ', { continued: true }).font('Helvetica').text(`${lead.area} sqm`);
-      doc.font('Helvetica-Bold').text('Complexity: ', { continued: true }).font('Helvetica').text(lead.complexity);
-      
-      let parsedDeliverables = [];
-      try { parsedDeliverables = JSON.parse(lead.deliverables); } catch(e) {}
-      doc.font('Helvetica-Bold').text('Requested Deliverables: ', { continued: true }).font('Helvetica').text(parsedDeliverables.join(', '));
-      doc.moveDown(1);
+      doc.y = 250;
+      drawLabelValue(doc, 'Project: ', quote.project, 42, doc.y, 511);
+      doc.moveDown(0.55);
+      drawLabelValue(doc, 'Deliverables: ', quote.deliverablesSummary, 42, doc.y, 511);
+      doc.moveDown(0.55);
+      drawLabelValue(doc, 'Timeframe: ', quote.timeframe, 42, doc.y, 511);
+      doc.moveDown(1.2);
+      drawTable(doc, quote, draft);
 
-      // Estimated Timeline
-      doc.fontSize(14).font('Helvetica-Bold').text('Estimated Timeline', { underline: true });
-      doc.moveDown(0.5);
-      doc.font('Helvetica-Bold').text('Field Time (1 Scanner): ', { continued: true }).font('Helvetica').text(`${lead.fieldDays} Days`);
-      doc.font('Helvetica-Bold').text('Processing Time: ', { continued: true }).font('Helvetica').text(`${lead.processDays} Days`);
+      ensureSpace(doc, 125, quote, draft);
       doc.moveDown(1.5);
+      drawLabelValue(doc, 'Payment reference: ', quote.paymentReference || quote.clientCompany || quote.clientContact, 42, doc.y, 511);
+      doc.moveDown(1.1);
+      drawLabelValue(doc, 'Bank: ', settings.bankName, 42, doc.y, 511);
+      doc.moveDown(0.55);
+      drawLabelValue(doc, 'Account name: ', settings.bankAccountName, 42, doc.y, 511);
+      doc.moveDown(0.55);
+      drawLabelValue(doc, 'Account number: ', settings.bankAccountNumber, 42, doc.y, 511);
+      doc.moveDown(0.55);
+      drawLabelValue(doc, 'Branch code: ', settings.bankBranchCode, 42, doc.y, 511);
 
-      // Pricing Box
-      const formatZAR = (val: number) => new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(val || 0);
-      
-      doc.rect(50, doc.y, 500, 60).fill('#f3f4f6');
-      doc.fillColor('#111827').fontSize(14).font('Helvetica-Bold').text('Formal quoted amount:', 70, doc.y + 20, { continued: true });
-      doc.fillColor('#10b981').fontSize(18).text(`   ${formatZAR(lead.quoteTotal)}`);
-      
-      doc.moveDown(4);
-
-      // Footer
-      doc.fillColor('#6b7280').fontSize(10).font('Helvetica-Oblique').text('Note: This formal scoping estimate is based on the reviewed parameters above. Scope change may result in a revised quotation.', 50, doc.y, { align: 'center', width: 500 });
-
-      // Add a new page for Terms & Conditions
-      doc.addPage();
-      
-      // Terms & Conditions Header
-      doc.fontSize(16).font('Helvetica-Bold').fillColor('#111827').text('General Terms and Conditions', { align: 'center' });
-      doc.moveDown(1.5);
-      
-      // Terms Content
-      doc.fontSize(10).font('Helvetica').fillColor('#4b5563');
-      
-      const terms = [
-        "1. Scope of Work: The estimate provided above is based solely on the parameters extracted from the provided documentation. Any significant deviation in physical scope or complexity upon site arrival may result in a revised quotation.",
-        "2. Validity: This estimate is valid for 30 days from the date of issue.",
-        "3. Payment Terms: A 50% deposit is required prior to mobilization, with the remaining 50% due upon delivery of final processed data, unless otherwise negotiated.",
-        "4. Site Access: The client is responsible for ensuring safe, unobstructed access to the scanning environment during the scheduled field days.",
-        "5. Liability: 3D Scan Metrics is not liable for project delays caused by severe weather, site inaccessibility, or hazards undisclosed by the client.",
-        "6. Data Ownership: Raw scan data and final deliverables remain the property of 3D Scan Metrics until full payment has been received.",
-        "7. Accuracy Limitations: While industry-standard high-precision scanners are utilized, stated accuracy limits are subject to environmental conditions (e.g., vibration, dust) present on site."
-      ];
-
-      terms.forEach(term => {
-        doc.text(term, { align: 'justify', lineGap: 4 });
-        doc.moveDown(1);
-      });
-
+      drawTerms(doc, quote, draft);
+      const pages = doc.bufferedPageRange();
+      for (let index = 0; index < pages.count; index += 1) {
+        doc.switchToPage(index);
+        doc.page.margins.bottom = 0;
+        doc.fillColor('#64748b').font('Helvetica').fontSize(7.5)
+          .text(`Page ${index + 1} of ${pages.count}  |  ${quote.quoteNumber}`, 42, doc.page.height - 24, {
+            width: 511, align: 'center', lineBreak: false,
+          });
+      }
       doc.end();
-    } catch (err) {
-      reject(err);
+    } catch (error) {
+      reject(error);
     }
   });
 }

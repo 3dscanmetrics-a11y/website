@@ -16,7 +16,8 @@
       "binding": "DB",
       "database_name": "3dscanmetrics",
       "database_id": "dd6e122f-450b-465c-93af-2aebe9a59acc",
-      "migrations_dir": "migrations"
+      "migrations_dir": "../site/migrations"
     }
-  ]
+  ],
+  "r2_buckets": [{ "binding": "PRIVATE_FILES", "bucket_name": "3dscanmetrics-private" }]
 }

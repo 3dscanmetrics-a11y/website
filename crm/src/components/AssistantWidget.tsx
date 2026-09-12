@@ -33,7 +33,7 @@ export default function AssistantWidget() {
         // If the AI modified the database, refresh the current page to show the new data
         router.refresh();
       }
-    } catch (e) {
+      } catch {
       setMessages(prev => [...prev, { role: 'assistant', content: 'Error communicating with AI.' }]);
     } finally {
       setLoading(false);
