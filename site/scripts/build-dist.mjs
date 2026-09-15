@@ -21,7 +21,7 @@ const includeExact = new Set([
 
 const includeDirs = ['assets', 'services', 'locations'];
 
-const SITE_ORIGIN = 'https://www.3dscanmetrics.co.za';
+const SITE_ORIGIN = 'https://3dscanmetrics.co.za';
 const SOCIAL_IMAGE = `${SITE_ORIGIN}/hero_scan.png`;
 
 function publicPathFor(relativePath) {
