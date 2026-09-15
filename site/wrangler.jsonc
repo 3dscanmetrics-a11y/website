@@ -5,6 +5,10 @@
   "compatibility_date": "2026-08-11",
   "workers_dev": true,
   "preview_urls": false,
+  "routes": [
+    { "pattern": "3dscanmetrics.co.za", "custom_domain": true },
+    { "pattern": "www.3dscanmetrics.co.za", "custom_domain": true }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
